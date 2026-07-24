@@ -107,7 +107,10 @@
         }
         button:hover { background: var(--azuki-dark); }
         button:active { transform: translateY(1px); }
-        button:disabled { background: #d6c2c8; color: #fff; cursor: not-allowed; box-shadow: none; }
+        /* pointer-events:none がないと、無効化中でも .btn-excel:hover 等の
+           クラス2つ分のCSS優先度が button:disabled を上書きし、押せないのに
+           ホバー時だけ色が変わって「押せそう」に見えてしまう */
+        button:disabled { background: #d6c2c8; color: #fff; cursor: not-allowed; box-shadow: none; pointer-events: none; }
 
         #saveBtn {
             width: 100%;
@@ -149,6 +152,22 @@
         tbody tr:nth-child(even) { background: var(--pink-bg); }
         tbody tr:hover { background: var(--pink-pale); }
         .qty-input { width: 64px; padding: 7px; }
+
+        /* 枚数の一括設定バー */
+        .bulk-qty {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 0 0 14px;
+            padding: 12px 14px;
+            background: var(--pink-pale);
+            border: 1.5px solid var(--pink);
+            border-radius: 12px;
+        }
+        .bulk-qty label { margin: 0; color: var(--azuki); }
+        .bulk-qty .qty-input { width: 76px; }
+        .bulk-qty button { padding: 8px 16px; font-size: 0.9em; }
 
         /* モバイル向け最適化 */
         @media (max-width: 768px) {
@@ -291,7 +310,7 @@
                 <li>まず「出品者名」を入力します（値札PDFに印字されます）。</li>
                 <li>「通し番号＋商品名」「価格（税込）」「販売方法」を入力して <strong>「リストに追加」</strong> を押します。</li>
                 <li>バーコードが必要な商品は <strong>「バーコードを付ける」</strong> にチェック（「自動生成」で発番もできます）。</li>
-                <li>登録した商品は一覧に並びます。<strong>「枚数」</strong> 欄で印刷したい部数を指定できます。</li>
+                <li>登録した商品は一覧に並びます。<strong>「枚数」</strong> 欄で印刷したい部数を指定できます（<strong>0</strong> にするとその商品はPDFに印刷されません）。</li>
                 <li><strong>「プレビュー」</strong> で仕上がりを確認し、<strong>「44面シールPDFを出力」</strong> で印刷用PDF（A-one 44面・品番31516）を保存します。</li>
                 <li>バーコード付きの商品があれば、<strong>「レジマスタ用Excelを出力」</strong> でレジ登録用ファイルも作れます。</li>
             </ol>
@@ -376,6 +395,14 @@
 
         <div class="list-section">
             <h3 style="margin-top: 0;">登録済み商品一覧</h3>
+
+            <div class="bulk-qty">
+                <label for="bulkQty">枚数を一括設定</label>
+                <input type="number" id="bulkQty" class="qty-input" min="0" value="1">
+                <button type="button" onclick="applyBulkQuantity()">全商品に適用</button>
+                <button type="button" class="btn-sub" onclick="applyBulkQuantity(0)">全部を0に</button>
+            </div>
+
             <div class="table-wrapper">
                 <table id="itemTable">
                     <thead>
@@ -455,7 +482,8 @@
             name: o.name ?? '',
             price: Number(o.price) || 0,
             method: o.method ?? '販売',
-            quantity: Math.max(1, Number(o.quantity) || 1),
+            // 枚数は0を許可（追加したが今は刷らない商品）。値が無い旧データは従来どおり1に。
+            quantity: o.quantity == null ? 1 : Math.max(0, Math.floor(Number(o.quantity)) || 0),
             hasBarcode,
             code: hasBarcode ? (o.code && o.code !== '-' ? o.code : null) : null,
             shippingPayer: o.shippingPayer ?? '',
@@ -743,7 +771,7 @@
                 <td>${escapeHtml(item.name)}</td>
                 <td>¥${item.price.toLocaleString('ja-JP')}</td>
                 <td>${item.hasBarcode ? escapeHtml(item.code || '') : '—'}</td>
-                <td><input type="number" class="qty-input" min="1" value="${item.quantity}" onchange="updateQuantity('${item.id}', this.value)"></td>
+                <td><input type="number" class="qty-input" min="0" value="${item.quantity}" onchange="updateQuantity('${item.id}', this.value)"></td>
                 <td>
                     <button class="btn-edit" onclick="editItem('${item.id}')" style="padding:6px 10px;">編集</button>
                     <button class="btn-danger" onclick="deleteItem('${item.id}')" style="padding:6px 10px;">削除</button>
@@ -766,7 +794,24 @@
     function updateQuantity(id, value) {
         const item = items.find(i => i.id === id);
         if (!item) return;
-        item.quantity = Math.max(1, Number(value) || 1);
+        // 0以上の整数に丸める（0=印刷しない）。負数や空欄は0扱い
+        item.quantity = Math.max(0, Math.floor(Number(value)) || 0);
+        localStorage.setItem('marketItems', JSON.stringify(items));
+        renderTable();
+    }
+
+    // すべての商品の枚数をまとめて設定する。
+    // 引数 forced を渡せばその値（例: 「全部を0に」ボタン）、無指定なら入力欄の値を使う
+    function applyBulkQuantity(forced) {
+        if (items.length === 0) {
+            alert("商品が登録されていません。");
+            return;
+        }
+        const raw = forced !== undefined ? forced : document.getElementById('bulkQty').value;
+        const q = Math.max(0, Math.floor(Number(raw)) || 0);
+        // 個別に設定した枚数を上書きするため、確認を挟む
+        if (!confirm(`すべての商品（${items.length}件）の枚数を ${q} に変更します。よろしいですか？`)) return;
+        items.forEach(it => it.quantity = q);
         localStorage.setItem('marketItems', JSON.stringify(items));
         renderTable();
     }
@@ -895,7 +940,7 @@
             alert("日本語フォントの読み込みに失敗しました。\n（ネットワーク接続をご確認ください）\n英語表記でPDFを出力します。");
         }
 
-        const queue = targetItems.flatMap(it => Array.from({ length: it.quantity }, () => it));
+        const queue = targetItems.flatMap(it => Array.from({ length: Math.max(0, it.quantity) }, () => it));
 
         queue.forEach((item, idx) => {
             if (idx > 0 && idx % LABEL_TEMPLATE.perPage === 0) doc.addPage();
@@ -908,9 +953,14 @@
         return doc;
     }
 
+    // 印刷キューの総枚数（各商品の枚数の合計）。0のときは出力対象なし
+    function totalLabelCount(list) {
+        return list.reduce((sum, it) => sum + Math.max(0, it.quantity), 0);
+    }
+
     async function generatePDF() {
-        if (items.length === 0) {
-            alert("印刷する商品がありません。");
+        if (totalLabelCount(items) === 0) {
+            alert("印刷する枚数が0です。一覧の「枚数」を1以上にしてください。");
             return;
         }
         const pdfBtn = document.querySelector('.btn-pdf');
@@ -930,8 +980,8 @@
     let previewUrl = null;
 
     async function previewPDF() {
-        if (items.length === 0) {
-            alert("プレビューする商品がありません。");
+        if (totalLabelCount(items) === 0) {
+            alert("プレビューする枚数が0です。一覧の「枚数」を1以上にしてください。");
             return;
         }
         const btn = document.getElementById('previewBtn');
